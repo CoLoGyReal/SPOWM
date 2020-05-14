@@ -1,98 +1,138 @@
-#include <windows.h>
-#include <conio.h>
+#include <Windows.h>
 #include <iostream>
+#include <vector>
 #include <string>
-#define COUNT 10
+#include <set>
+#include <list>
+#include <iterator>
+
 using namespace std;
-string s_numbers[10]{
-	{ "One" },{ "Two" },{ "Three" },{ "Four" },{ "Five" },{ "Six" },{ "Seven" },{ "Eight" },
-	{ "Nine" },{ "Ten" }
-};
-using namespace std;
-PROCESS_INFORMATION CreateNewProcess(char* name, char *comline);
-void Create(char *name);
-void Print(int ProccessNumber);
 
-void main(int argc, char* argv[])
-{
-	if (argc == 2)
-	{
-		Print(atoi(argv[1]));
+CRITICAL_SECTION critsec;
+list<DWORD> to_close;
+vector<HANDLE> events;
+size_t current;
+bool close = 0;
+
+void outStrByChar(wstring& str) {
+	for (auto a : str) {
+		wcout << a;
+		Sleep(50);
 	}
-	else
-		Create(argv[0]);
-	return;
+	cout << endl;
 }
 
-void Create(char *name)
-{
-	int activeProcess = 0;
-	HANDLE hCanWriteEvent = CreateEvent(NULL, FALSE, TRUE, "WriteProcess");
-	char buffer[30];
-	char choose;
-	PROCESS_INFORMATION mas[COUNT];
-	HANDLE hCanClose[30];
-	while (choose = _getch())
-	{
-		if (choose == 'q') break;
-		if (choose == '-')
-			if (activeProcess)
-			{
-				SetEvent(hCanClose[activeProcess]);
-				SetEvent(hCanWriteEvent);
-				activeProcess--;
-
-				
+DWORD WINAPI ThreadFunc(LPVOID ThreadParam) {
+	wstring info = L"Thread ";
+	DWORD number = *(DWORD*)ThreadParam;
+	HANDLE event = OpenEvent(EVENT_ALL_ACCESS, false, to_wstring(number).c_str());
+	HANDLE se = OpenEvent(EVENT_ALL_ACCESS, false, L"syncr");
+	*(DWORD*)ThreadParam = *(DWORD*)ThreadParam + 1;
+	SetEvent(se);
+	info += to_wstring(number);
+	while (true) {
+		WaitForSingleObject(event, INFINITE);
+		if (close)
+			return 0;
+		EnterCriticalSection(&critsec);
+		if (to_close.size())
+			if (GetCurrentThreadId() == to_close.front()) {
+				to_close.pop_front();
+				ResetEvent(events.back());
+				events.pop_back();
+				if (events.size()) {
+					current = 0;
+					HANDLE tmp = events[current];
+					SetEvent(tmp);
+				}
+				LeaveCriticalSection(&critsec);
+				return 0;
 			}
-		if ((choose == '+') && (activeProcess < COUNT))
-		{
-			sprintf(buffer, " %d", ++activeProcess);
-			hCanClose[activeProcess] = CreateEvent(NULL, FALSE, FALSE, buffer);
-			mas[activeProcess-1] = CreateNewProcess(name, buffer);
+
+		for (auto a : info) {
+			wcout << a;
+			Sleep(20);
 		}
-		Sleep(300);
+		cout << endl;
+		++current;
+		if (current == events.size())
+			current = 0;
+		LeaveCriticalSection(&critsec);
+		HANDLE tmp = events[current];
+		SetEvent(tmp);
 	}
-	if (activeProcess)
-	{
-		while (activeProcess>0)
-		{
-			SetEvent(hCanClose[activeProcess]);
-			SetEvent(hCanWriteEvent);
-			activeProcess--;
-		}
-	}
-	system("pause");
+	return 0;
 }
 
-PROCESS_INFORMATION CreateNewProcess(char* name, char *comline)
-{
-	STARTUPINFO si;
-	ZeroMemory(&si, sizeof(STARTUPINFO));
-	PROCESS_INFORMATION pi;
-	CreateProcess(name, comline, NULL, NULL, TRUE, NULL, NULL, NULL, &si, &pi);
-	return pi;
-}
-void Print(int numofProccess)
-{
-	HANDLE hCanWriteEvent = OpenEvent(EVENT_ALL_ACCESS, FALSE, "WriteProcess");
-	char buffer[30];
-	sprintf(buffer, " %d", numofProccess);
-	HANDLE hCanClose = OpenEvent(EVENT_ALL_ACCESS, FALSE, buffer);
 
-	while (1)
-	{
-		if (WaitForSingleObject(hCanWriteEvent, INFINITE) == WAIT_OBJECT_0)
+
+HANDLE CreateNewThread(DWORD* number) {
+	DWORD dwThreadId;
+	HANDLE hThread;
+	hThread = CreateThread(
+		NULL,
+		0,
+		ThreadFunc,
+		number,
+		0,
+		&dwThreadId
+	);
+	return hThread;
+}
+
+
+int main() {
+	DWORD number = 0;
+	vector<HANDLE> thrIds;
+	char input;
+	HANDLE se = CreateEvent(NULL, false, false, L"syncr");
+	InitializeCriticalSection(&critsec);
+	cout << "Input +, - or q:" << endl;
+	while (true) {
+		cin >> input;
+		switch (input)
 		{
-			if (WaitForSingleObject(hCanClose, 100) == WAIT_OBJECT_0)
-			{
-				SetEvent(hCanWriteEvent);
-				return;
+		case '+': {
+
+			thrIds.push_back(CreateNewThread(&number));
+			events.push_back(CreateEvent(NULL, false, false, to_wstring(number).c_str()));
+			WaitForSingleObject(se, INFINITE);
+			if (events.size() == 1) {
+				HANDLE tmp = events.front();
+				SetEvent(tmp);
 			}
-			cout<< s_numbers[numofProccess - 1];
-				Sleep(300);
-			printf(" \n| ");
-			SetEvent(hCanWriteEvent);
+			break;
+		}
+		case '-': {
+			if (thrIds.empty()) {
+				cout << "No more threads left" << endl;
+			}
+			else {
+				HANDLE tmp1 = thrIds.back(), tmp2 = events.back();
+				thrIds.pop_back();
+				to_close.push_back(GetThreadId(tmp1));
+				WaitForSingleObject(tmp1, INFINITE);
+				CloseHandle(tmp1);
+				CloseHandle(tmp2);
+
+			}
+			break;
+		}
+		case 'q': {
+			close = true;
+			while (!thrIds.empty()) {
+				HANDLE tmp1 = thrIds.back(), tmp2 = events.back();
+				thrIds.pop_back();
+				events.pop_back();
+				CloseHandle(tmp1);
+				CloseHandle(tmp2);
+			}
+
+			exit(0);
+		}
+		default:
+			break;
 		}
 	}
-	return;
+	return 0;
 }
